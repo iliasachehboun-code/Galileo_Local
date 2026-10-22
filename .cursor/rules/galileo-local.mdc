@@ -1,0 +1,12 @@
+---
+description: Invariants de galileo-local, appliqués à chaque session dans ce dossier
+alwaysApply: true
+---
+
+Tu travailles dans galileo-local. Lis `AGENTS.md` avant de modifier du code.
+
+Ce dépôt est autonome (chat + traces + console). Project `galileo-local`, stream `chat`. Tu ne réintroduis pas de dépendance à un autre projet applicatif.
+
+Tu ne fais pas passer un oracle en l'éditant. Tu ne marques pas une issue `passes: true` sans la commande de test citée dans l'issue.
+
+Hors périmètre de la v1 : Luna Studio, Signals, l'assistant Galileo, les alertes, OpenTelemetry.

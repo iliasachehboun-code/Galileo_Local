@@ -1,0 +1,48 @@
+topic: Local Galileo (standalone)
+updated: 2026-10-22
+summary: >
+  Plateforme locale d'observabilité et d'évaluation alignée sur la surface
+  publique de Galileo : chat Agno, traces SQLite, métriques, expériences,
+  console. Project galileo-local / stream chat. Luna Studio, Signals et
+  l'assistant sont hors v1. Les spans de contenu sont workflow, agent, llm,
+  retriever et tool.
+sources:
+  - title: What Is Galileo?
+    url: https://docs.galileo.ai/what-is-galileo
+    note: produit — traces, évaluation, expériences, garde-fous
+  - title: Metrics overview
+    url: https://docs.galileo.ai/concepts/metrics/overview
+    note: familles reprises dans galileo_local/catalog.py
+  - title: Documentation index
+    url: https://docs.galileo.ai/llms.txt
+    note: point d'entrée pour le skill sync-external-context
+  - title: Galileo Logger
+    url: https://docs.galileo.ai/sdk-api/logging/galileo-logger
+    note: champs des cinq types de spans
+    raw: research/raw/spans/01-galileo-logger.md
+  - title: Log decorator
+    url: https://docs.galileo.ai/sdk-api/logging/log-decorator/log-decorator
+    note: type par défaut, documents retriever, tool_call_id
+    raw: research/raw/spans/02-log-decorator.md
+  - title: Span union
+    url: https://docs.galileo.ai/sdk-api/typescript/reference/types/type-aliases/Span
+    note: union fermée des cinq spans ; StepType ajoute control, trace, session
+    raw: research/raw/spans/03-span-union.md
+  - title: Metric levels
+    url: https://docs.galileo.ai/concepts/metrics/custom-metrics/custom-metrics-ui-llm
+    note: contenu attendu d'un retriever, d'un llm et d'un tool
+    raw: research/raw/spans/04-metric-levels.md
+wiki:
+  concepts:
+    - research/wiki/concepts/local-galileo.md
+    - research/wiki/concepts/spans.md
+  sources:
+    - research/wiki/sources/spans-galileo-logger.md
+    - research/wiki/sources/spans-log-decorator.md
+    - research/wiki/sources/spans-span-union.md
+    - research/wiki/sources/spans-metric-levels.md
+raw:
+  - research/raw/spans/01-galileo-logger.md
+  - research/raw/spans/02-log-decorator.md
+  - research/raw/spans/03-span-union.md
+  - research/raw/spans/04-metric-levels.md

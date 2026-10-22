@@ -1,0 +1,6 @@
+pydantic>=2.12
+pytest>=8
+agno
+fastapi>=0.136
+httpx>=0.23
+uvicorn>=0.34

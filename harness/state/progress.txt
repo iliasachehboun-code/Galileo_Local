@@ -1,0 +1,3 @@
+2026-10-21 — Architecture posée. Contrat clos. 16 tests verts (catalogue, oracle masqué, juge Agno).
+Aucune issue implémentée. Prochaine : issues/01-trace-store.md.
+Ne pas lancer ralph.ps1 pendant la prise architecture.
