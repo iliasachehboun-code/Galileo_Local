@@ -15,7 +15,8 @@
 ## Stack
 
 - Python 3.12, Pydantic v2, FastAPI, SQLite local, Agno (chat + juge de métriques).
-- Console v1 : pages servies par l’API sur `http://127.0.0.1:8090` (`/`, `/chat`, `/experiments`). Pas un second frontend React.
+- Console : UI clone Galileo (`harness/ui/`) servie sur `http://127.0.0.1:8090`. Frontend moderne (ex. React) autorisé s’il est buildé et servi par FastAPI ; l’API `/v1/*` reste le backend unique.
+- La home visuelle est le **Log stream**, pas le chat.
 
 ## Commandes
 
@@ -31,6 +32,7 @@ Installation : coller `harness/INSTALL_AGENT_PROMPT.md` dans un coding agent, ou
 - Contrat : `harness/CONTRACT.md`
 - Spec par phases : `harness/spec.md`
 - Produit, design, règles : `harness/product.md`, `harness/design.md`, `harness/business_rules.md`
+- UI clone : `harness/ui/`, surface console cloud : `harness/external/galileo_console_ui.md`
 - Contexte Galileo figé : `harness/external/galileo_surface.md`
 - Backlog : `issues/`
 - Boucle Ralph : `harness/ralph.ps1` et `harness/PROMPT.md`

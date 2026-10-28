@@ -10,6 +10,7 @@ Le produit standalone est en place (chat, magasin, console, métriques, juges, e
     |-- 04 Métriques code
             |-- 05 Juge Agno sur les 24 métriques du stream
                     |-- 06 Expériences
+                            |-- 07 Console UI clone Galileo (harness/ui/)
 ```
 
 (L’ancienne tranche « brancher une gateway externe » a été retirée : galileo-local est autonome.)

@@ -1,0 +1,10 @@
+.venv
+.env
+data
+.pytest_cache
+.hypothesis
+__pycache__
+.git
+.cursor
+*.pyc
+research/runs

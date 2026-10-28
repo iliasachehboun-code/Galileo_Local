@@ -2,7 +2,7 @@
 
 ``POST /v1/traces`` accepts a ``Trace``.
 ``POST /v1/chat`` and ``POST /chat`` run the Agno agent and store a clear-text trace.
-``GET /`` serves the log stream console. ``GET /chat`` serves the chat page.
+``GET /logs`` serves the Log stream table. ``GET /`` redirects to ``/logs``.
 """
 
 from __future__ import annotations
@@ -14,11 +14,19 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from galileo_local.chat import ChatRequest, run_chat
 from galileo_local.chat_page import render_chat_page
-from galileo_local.console import render_console, render_experiments
+from galileo_local.console import (
+    render_console,
+    render_experiments,
+    render_logs,
+    render_metrics_page,
+    render_overview,
+    render_session_detail,
+    render_trace_detail,
+)
 from galileo_local.experiments import DuplicateRun, ExperimentCreate, MissingTrace
 from galileo_local.models import Trace
 from galileo_local.pii_oracle import find_clear_pii
@@ -157,11 +165,50 @@ def create_app(
     application.add_exception_handler(RequestValidationError, _validation_error)
     application.include_router(router)
 
-    @application.get("/", response_class=HTMLResponse)
-    def console_index(trace: str | None = None, span: int | None = None) -> HTMLResponse:
+    @application.get("/", response_model=None)
+    def home(
+        trace: str | None = None,
+        span: int | None = None,
+    ) -> Response:
+        if trace:
+            return HTMLResponse(
+                render_console(application.state.store, selected=trace, span=span)
+            )
+        return RedirectResponse(url="/logs", status_code=307)
+
+    @application.get("/logs", response_class=HTMLResponse)
+    def logs_page(
+        level: str = "traces",
+        q: str = "",
+        page: int = 1,
+        trace: str | None = None,
+        span: int | None = None,
+    ) -> HTMLResponse:
+        if trace:
+            return HTMLResponse(
+                render_trace_detail(application.state.store, trace, span=span)
+            )
         return HTMLResponse(
-            render_console(application.state.store, selected=trace, span=span)
+            render_logs(application.state.store, level=level, q=q, page=page)
         )
+
+    @application.get("/logs/traces/{request_id}", response_class=HTMLResponse)
+    def logs_trace(request_id: str, span: int | None = None) -> HTMLResponse:
+        return HTMLResponse(
+            render_trace_detail(application.state.store, request_id, span=span)
+        )
+
+    @application.get("/logs/sessions/{session_id}", response_class=HTMLResponse)
+    def logs_session(session_id: str) -> HTMLResponse:
+        return HTMLResponse(render_session_detail(application.state.store, session_id))
+
+    @application.get("/overview", response_class=HTMLResponse)
+    def overview_page() -> HTMLResponse:
+        return HTMLResponse(render_overview(application.state.store))
+
+    @application.get("/metrics", response_class=HTMLResponse)
+    def metrics_page() -> HTMLResponse:
+        return HTMLResponse(render_metrics_page())
 
     @application.get("/chat", response_class=HTMLResponse)
     def chat_get() -> HTMLResponse:

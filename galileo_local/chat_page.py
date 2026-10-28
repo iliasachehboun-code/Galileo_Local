@@ -1,65 +1,54 @@
-"""Minimal chat page for the standalone Agno agent."""
+"""Chat page inside the Galileo console shell."""
 
 from __future__ import annotations
 
 from html import escape
 
-from galileo_local.settings import PROJECT_NAME
+from galileo_local.ui_shell import breadcrumb_plain, render_shell
 
 
-def render_chat_page(*, error: str = "", reply: str = "", message: str = "", session_id: str = "", trace_url: str = "") -> str:
+def render_chat_page(
+    *,
+    error: str = "",
+    reply: str = "",
+    message: str = "",
+    session_id: str = "",
+    trace_url: str = "",
+) -> str:
     err = f'<p class="error">{escape(error)}</p>' if error else ""
     out = ""
     if reply:
-        link = f'<p><a href="{escape(trace_url)}">Voir la trace et les métriques</a></p>' if trace_url else ""
+        link = ""
+        if trace_url:
+            href = escape(trace_url)
+            if href.startswith("/?trace="):
+                rid = href.split("trace=", 1)[1]
+                href = f"/logs/traces/{rid}"
+            link = f'<p><a href="{href}">View in Logs</a></p>'
         out = (
-            '<section class="turn">'
-            f"<h2>Vous</h2><pre>{escape(message)}</pre>"
+            '<section class="panel turn" style="margin-top:1rem">'
+            f"<h2>You</h2><pre>{escape(message)}</pre>"
             f"<h2>Agent</h2><pre>{escape(reply)}</pre>"
             f"{link}"
             "</section>"
         )
-    return (
-        "<!DOCTYPE html>"
-        '<html lang="fr">'
-        "<head>"
-        '<meta charset="utf-8">'
-        f"<title>{escape(PROJECT_NAME)} · chat</title>"
-        "<style>"
-        "body{margin:0;background:#f7f7f8;color:#1c1c1c;font:16px/1.45 'Segoe UI',sans-serif;}"
-        "header{display:flex;gap:1.25rem;align-items:center;padding:.8rem 1.25rem;"
-        "background:#fff;border-bottom:1px solid #e6e6e6;}"
-        "header p{margin:0;}a{color:#5b21b6;}"
-        "main{max-width:44rem;margin:1.5rem auto;padding:0 1rem;}"
-        "form{background:#fff;border:1px solid #e6e6e6;border-radius:8px;padding:1rem;}"
-        "textarea{width:100%;min-height:6rem;box-sizing:border-box;padding:.75rem;"
-        "border:1px solid #d0d0d0;border-radius:8px;font:inherit;}"
-        "button{margin-top:.75rem;background:#5b21b6;color:#fff;border:0;border-radius:8px;"
-        "padding:.55rem 1rem;font:inherit;cursor:pointer;}"
-        ".turn{margin-top:1.25rem;background:#fff;border:1px solid #e6e6e6;"
-        "border-radius:8px;padding:1rem;}"
-        "pre{white-space:pre-wrap;background:#fafafa;border:1px solid #eee;"
-        "border-radius:8px;padding:.75rem;}"
-        ".error{color:#b42318;}"
-        "</style>"
-        "</head>"
-        "<body>"
-        "<header>"
-        f"<p>{escape(PROJECT_NAME)}</p>"
-        '<p><a href="/">traces</a></p>'
-        '<p><a href="/experiments">expériences</a></p>'
-        "</header>"
-        "<main>"
+    main = (
         "<h1>Chat</h1>"
-        "<p>Un agent Agno. Chaque message crée une trace scorée sur la console.</p>"
+        "<p>Generate traffic for the Log stream. Each message stores a scored trace.</p>"
         f"{err}"
-        '<form method="post" action="/chat">'
+        '<form class="chat-form panel" method="post" action="/chat">'
         f'<input type="hidden" name="session_id" value="{escape(session_id)}">'
         f'<label for="message">Message</label>'
-        f'<textarea id="message" name="message" required>{escape(message if not reply else "")}</textarea>'
-        "<button type=\"submit\">Envoyer</button>"
+        f'<textarea id="message" name="message" required>'
+        f'{escape(message if not reply else "")}</textarea>'
+        '<button class="btn-primary" type="submit">Send</button>'
         "</form>"
         f"{out}"
-        "</main>"
-        "</body></html>"
+    )
+    return render_shell(
+        title="Galileo · Chat",
+        active="chat",
+        breadcrumb=breadcrumb_plain("Chat"),
+        main=main,
+        header_action='<a class="btn-primary" href="/logs">View in Logs</a>',
     )

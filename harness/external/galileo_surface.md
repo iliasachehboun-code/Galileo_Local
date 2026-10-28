@@ -11,6 +11,7 @@ Galileo est une plateforme d’observabilité, d’évaluation et de garde-fous 
 - Métriques out-of-the-box listées dans `galileo_local/catalog.py`, chacune avec l’URL de sa fiche.
 - Métriques custom : juge LLM, code, composite. Forme prévue, aucune métrique custom obligatoire.
 - Expériences : un jeu de traces, un run, une comparaison. Guide : https://docs.galileo.ai/getting-started/experiments.
+- **Console UI** : chrome et vue Log stream alignés sur la console cloud — détail figé dans `harness/external/galileo_console_ui.md`, spec locale dans `harness/ui/`.
 
 ## Ce que la v1 laisse de côté
 

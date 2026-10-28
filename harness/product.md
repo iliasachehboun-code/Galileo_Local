@@ -2,11 +2,13 @@
 
 galileo-local est une console Galileo locale pour un ingénieur qui veut tracer un chat agentique, scorer les tours, et comparer des runs — sans compte Galileo cloud.
 
+L’UI doit être **reconnaissable comme Galileo** (sidebar, Log stream, badges métriques). Voir `harness/ui/` et `harness/external/galileo_console_ui.md`.
+
 Il peut :
 
-- envoyer un message sur `/chat` et lire la réponse ;
-- ouvrir la trace correspondante (spans agent / llm) ;
-- voir les scores des métriques Galileo ;
+- ouvrir le Log stream (`/logs`) comme dans la console cloud (Sessions / Traces / Spans) ;
+- envoyer un message sur `/chat` pour générer des traces ;
+- ouvrir une trace (spans + métriques) ;
 - relancer les scores sur un lot et comparer deux runs.
 
 Il ne peut pas (v1) :

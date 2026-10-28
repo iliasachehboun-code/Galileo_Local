@@ -20,8 +20,20 @@ copy .env.example .env
 
 Pour Azure / GCP, mets `GALILEO_BIND_HOST=0.0.0.0` dans `.env`.
 
+## Déploiement Azure (Container Apps)
+
+```powershell
+cd galileo-local
+docker build -t galileo-local:local .
+# Puis : ACR + Container App (voir script deploy-azure.ps1)
+.\deploy-azure.ps1
+```
+
+L’app écoute sur le port `8080` dans le conteneur. La clé `OPENAI_API_KEY` est injectée comme secret Azure (pas dans l’image).
+
 ## Tests
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
+

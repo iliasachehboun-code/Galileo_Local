@@ -95,7 +95,7 @@ def run_chat(
         reply=reply,
         request_id=trace.request_id,
         session_id=sid,
-        trace_url=f"/?trace={trace.request_id}",
+        trace_url=f"/logs/traces/{trace.request_id}",
     ), trace
 
 

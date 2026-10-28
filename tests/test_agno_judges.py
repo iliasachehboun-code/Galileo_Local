@@ -43,7 +43,7 @@ class FixedModel(Model):
             content = getattr(message, "content", "")
             if not isinstance(content, str):
                 continue
-            if "Never reconstruct" in content:
+            if "never reconstruct" in content.lower():
                 self.instructions.append(content)
             if content.startswith("Metric: "):
                 self.prompts.append(content)

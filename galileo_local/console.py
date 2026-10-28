@@ -1,11 +1,4 @@
-"""Gateway console: chat history, metric judgments, and one interaction.
-
-The history table shows the masked user text, the masked model answer when the
-trace kept one, and one cell per headline metric. A click opens that
-interaction: the span tree, the selected text, and the judgments. Layer 8
-shows a token count, a status, and a fixed label. The rehydrated answer is
-not a field here.
-"""
+"""Galileo Log stream console: table, aggregations, and trace detail."""
 
 from __future__ import annotations
 
@@ -18,6 +11,11 @@ from galileo_local.models import Span, SpanType, Trace, rehydration_span
 from galileo_local.pii_oracle import find_clear_pii
 from galileo_local.settings import LOG_STREAM, PROJECT_NAME
 from galileo_local.store import TraceStore
+from galileo_local.ui_shell import (
+    breadcrumb_logs,
+    breadcrumb_plain,
+    render_shell,
+)
 
 _METRIC_NAMES = {metric.id: metric.name for metric in METRICS}
 _TABLE_METRICS = (
@@ -45,7 +43,7 @@ _PANELS = (
         ),
     ),
 )
-_ANSWER_ABSENT = "La réponse du modèle n'est pas enregistrée dans la trace."
+_PAGE_SIZE = 25
 
 GATEWAY_PROJECT = PROJECT_NAME
 GATEWAY_STREAM = LOG_STREAM
@@ -91,8 +89,6 @@ def fixture_gateway_trace() -> Trace:
 
 
 def order_scores(scores: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """A ``pii`` score of 0 comes first. Judges keep their relative order."""
-
     def rank(item: Mapping[str, Any]) -> int:
         if str(item.get("metric_id", "")) == "pii" and _score_number(item.get("score")) == 0:
             return 0
@@ -102,7 +98,6 @@ def order_scores(scores: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]
 
 
 def render_score_list(scores: Sequence[Mapping[str, Any]]) -> str:
-    """Numbers from 0 to 1 and the ``passed`` boolean. Empty when there are none."""
     items: list[str] = []
     for score in order_scores(scores):
         metric = escape(str(score.get("metric_id", "")))
@@ -115,25 +110,180 @@ def render_score_list(scores: Sequence[Mapping[str, Any]]) -> str:
 def render_console(
     store: TraceStore,
     *,
-    selected: str | None,
+    selected: str | None = None,
+    span: int | None = None,
+    level: str = "traces",
+    q: str = "",
+    page: int = 1,
+) -> str:
+    """Compat entry: selected opens detail; otherwise Log stream table."""
+    if selected:
+        return render_trace_detail(store, selected, span=span)
+    return render_logs(store, level=level, q=q, page=page)
+
+
+def render_logs(
+    store: TraceStore,
+    *,
+    level: str = "traces",
+    q: str = "",
+    page: int = 1,
+) -> str:
+    level = level if level in {"sessions", "traces", "spans"} else "traces"
+    if q and find_clear_pii(q):
+        q = ""
+    stored = _load_stream(store)
+    score_map = {
+        item["trace"].request_id: _scores(store, item["trace"].request_id) for item in stored
+    }
+    counts = _counts(stored)
+    rows = _rows_for_level(stored, score_map, level)
+    if q.strip():
+        needle = q.strip().lower()
+        rows = [row for row in rows if needle in _search_blob(row)]
+    total = len(rows)
+    page = max(1, page)
+    start = (page - 1) * _PAGE_SIZE
+    page_rows = rows[start : start + _PAGE_SIZE]
+    pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+
+    main = (
+        _logs_tabs()
+        + _toolbar(level, counts, q)
+        + _table(page_rows, level)
+        + _pager(level, q, page, pages)
+    )
+    return render_shell(
+        title=f"Galileo · Logs: {LOG_STREAM}",
+        active="logs",
+        breadcrumb=breadcrumb_logs(),
+        main=main,
+    )
+
+
+def render_trace_detail(
+    store: TraceStore,
+    request_id: str,
+    *,
     span: int | None = None,
 ) -> str:
-    """History of gateway traces. A click opens one interaction."""
-    if selected and find_clear_pii(selected):
-        selected = None
-    if span is not None and span < 0:
-        span = None
-    stored = _load_gateway(store)
-    by_id = {
-        item["trace"].request_id: _selected_scores(store, item["trace"].request_id)
-        for item in stored
+    if find_clear_pii(request_id):
+        return render_logs(store)
+    stored = _load_stream(store)
+    for item in stored:
+        trace: Trace = item["trace"]
+        if trace.request_id == request_id:
+            scores = _scores(store, request_id)
+            if span is not None and span < 0:
+                span = None
+            body = (
+                '<p class="back"><a href="/logs">← Logs</a></p>'
+                + _session(trace, scores, span)
+            )
+            return render_shell(
+                title=f"Galileo · {trace.name}",
+                active="logs",
+                breadcrumb=breadcrumb_logs(),
+                main=body,
+            )
+    body = (
+        '<p class="back"><a href="/logs">← Logs</a></p>'
+        f'<div id="trace-detail"><p>Trace not found: {escape(request_id)}</p></div>'
+    )
+    return render_shell(
+        title="Galileo · Trace",
+        active="logs",
+        breadcrumb=breadcrumb_logs(),
+        main=body,
+    )
+
+
+def render_session_detail(store: TraceStore, session_id: str) -> str:
+    if find_clear_pii(session_id):
+        return render_logs(store, level="sessions")
+    stored = [
+        item
+        for item in _load_stream(store)
+        if item["trace"].session_id == session_id
+    ]
+    if not stored:
+        body = (
+            '<p class="back"><a href="/logs?level=sessions">← Logs</a></p>'
+            f"<p>Session not found.</p>"
+        )
+        return render_shell(
+            title="Galileo · Session",
+            active="logs",
+            breadcrumb=breadcrumb_logs(),
+            main=body,
+        )
+    score_map = {
+        item["trace"].request_id: _scores(store, item["trace"].request_id) for item in stored
     }
-    rows = [_row(item, by_id.get(item["trace"].request_id, [])) for item in stored]
-    chosen = by_id.get(selected, []) if selected else []
-    detail = _detail_for(stored, selected, chosen, span)
-    history = _list_html(rows, selected)
-    body = detail + history if selected else history
-    return _shell(body)
+    rows = _rows_for_level(stored, score_map, "traces")
+    body = (
+        '<p class="back"><a href="/logs?level=sessions">← Logs</a></p>'
+        f"<h1>Session {escape(session_id)}</h1>"
+        + _table(rows, "traces")
+    )
+    return render_shell(
+        title="Galileo · Session",
+        active="logs",
+        breadcrumb=breadcrumb_logs(),
+        main=body,
+    )
+
+
+def render_overview(store: TraceStore) -> str:
+    stored = _load_stream(store)
+    counts = _counts(stored)
+    last = "—"
+    if stored:
+        last = str(stored[-1].get("created_at") or "—")
+    body = (
+        "<h1>Overview</h1>"
+        '<div class="counters">'
+        f'<div class="counter"><div class="n">{counts["sessions"]}</div>'
+        '<div class="l">Sessions</div></div>'
+        f'<div class="counter"><div class="n">{counts["traces"]}</div>'
+        '<div class="l">Traces</div></div>'
+        f'<div class="counter"><div class="n">{counts["spans"]}</div>'
+        '<div class="l">Spans</div></div>'
+        "</div>"
+        f'<p style="margin-top:1.25rem;color:var(--gal-muted)">Last event: {escape(last)}</p>'
+        '<p><a class="btn-primary" href="/logs">Open Logs</a></p>'
+    )
+    return render_shell(
+        title="Galileo · Overview",
+        active="overview",
+        breadcrumb=breadcrumb_plain("Overview"),
+        main=body,
+    )
+
+
+def render_metrics_page() -> str:
+    items: list[str] = []
+    for metric in METRICS:
+        if not metric.cimr_stream:
+            continue
+        items.append(
+            "<li>"
+            f"<strong>{escape(metric.name)}</strong> "
+            f'<span class="na">({escape(metric.id)} · {escape(metric.kind)})</span>'
+            "</li>"
+        )
+    body = (
+        "<h1>Configure Metrics</h1>"
+        "<p>Active text metrics on this log stream (read-only in v1).</p>"
+        f'<ul class="metric-list">{"".join(items)}</ul>'
+    )
+    return render_shell(
+        title="Galileo · Metrics",
+        active="metrics",
+        breadcrumb=breadcrumb_plain("Metrics"),
+        main=body,
+        header_action='<a class="btn-primary" href="/logs">Back to Logs</a>',
+    )
 
 
 def render_experiments(
@@ -142,21 +292,26 @@ def render_experiments(
     left: str | None = None,
     right: str | None = None,
 ) -> str:
-    """Comparison of two runs. The header link on ``/`` opens this page.
-
-    With no names, the two latest runs are shown. The table is the whole
-    comparison: metric, then the two scores. No chart.
-    """
     if _query_is_blocked(left) or _query_is_blocked(right):
-        return _shell(_experiments_message("Run introuvable."))
-    chosen = _chosen_runs(store, left, right)
-    if chosen is None:
-        return _shell(_experiments_message("Deux runs sont nécessaires pour comparer les scores."))
-    left_name, right_name = chosen
-    compared = store.compare_experiments(left_name, right_name)
-    if compared is None:
-        return _shell(_experiments_message("Run introuvable."))
-    return _shell(_experiments_message(_comparison_table(compared), lead=True))
+        inner = _experiments_message("Run not found.")
+    else:
+        chosen = _chosen_runs(store, left, right)
+        if chosen is None:
+            inner = _experiments_message("Deux runs sont nécessaires pour comparer les scores.")
+        else:
+            left_name, right_name = chosen
+            compared = store.compare_experiments(left_name, right_name)
+            if compared is None:
+                inner = _experiments_message("Run not found.")
+            else:
+                inner = _experiments_message(_comparison_table(compared), lead=True)
+    return render_shell(
+        title="Galileo · Experiments",
+        active="experiments",
+        breadcrumb=breadcrumb_plain("Experiments"),
+        main=inner,
+        header_action='<a class="btn-primary" href="/logs">Open Logs</a>',
+    )
 
 
 def _query_is_blocked(value: str | None) -> bool:
@@ -181,15 +336,12 @@ def _chosen_runs(
 
 
 def _experiments_message(text: str, *, lead: bool = False) -> str:
-    if lead:
-        body = text
-    else:
-        body = f"<p>{escape(text)}</p>"
+    body = text if lead else f"<p>{escape(text)}</p>"
     return (
         '<div id="experiments">'
-        "<h1>Expériences</h1>"
+        "<h1>expériences</h1>"
         f"{body}"
-        '<p><a href="/">retour aux traces</a></p>'
+        '<p><a href="/logs">retour aux traces</a></p>'
         "</div>"
     )
 
@@ -208,7 +360,6 @@ def _comparison_table(compared: Mapping[str, Any]) -> str:
             f"{_score_cell(metric.get('right'))}"
             "</tr>"
         )
-    body = "".join(rows)
     return (
         "<p>Les deux scores de chaque métrique.</p>"
         '<table id="run-comparison">'
@@ -217,7 +368,7 @@ def _comparison_table(compared: Mapping[str, Any]) -> str:
         f"<th>{left}</th>"
         f"<th>{right}</th>"
         "</tr></thead>"
-        f"<tbody>{body}</tbody>"
+        f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
     )
 
@@ -228,8 +379,7 @@ def _metric_where(metric: Mapping[str, Any], metrics: Sequence[Mapping[str, Any]
         request_id = str(item.get("request_id", ""))
         if request_id and request_id not in request_ids:
             request_ids.append(request_id)
-    span = metric.get("span_index")
-    place = f"span {span}"
+    place = f"span {metric.get('span_index')}"
     if len(request_ids) > 1:
         return f"{metric.get('request_id', '')} · {place}"
     return place
@@ -244,7 +394,7 @@ def _score_cell(side: object) -> str:
     return f"<td>{number} passed {passed}{suffix}</td>"
 
 
-def _load_gateway(store: TraceStore) -> list[dict[str, Any]]:
+def _load_stream(store: TraceStore) -> list[dict[str, Any]]:
     loaded: list[dict[str, Any]] = []
     for item in store.list_traces(project=GATEWAY_PROJECT, log_stream=GATEWAY_STREAM):
         try:
@@ -255,108 +405,213 @@ def _load_gateway(store: TraceStore) -> list[dict[str, Any]]:
     return loaded
 
 
-def _row(item: dict[str, Any], scores: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _scores(store: TraceStore, request_id: str) -> list[dict[str, Any]]:
+    found = store.scores_for(request_id)
+    return list(found or [])
+
+
+def _counts(stored: list[dict[str, Any]]) -> dict[str, int]:
+    sessions = {item["trace"].session_id for item in stored}
+    spans = sum(len(item["trace"].spans) for item in stored)
+    return {"sessions": len(sessions), "traces": len(stored), "spans": spans}
+
+
+def _rows_for_level(
+    stored: list[dict[str, Any]],
+    score_map: Mapping[str, Sequence[Mapping[str, Any]]],
+    level: str,
+) -> list[dict[str, Any]]:
+    if level == "sessions":
+        return _session_rows(stored, score_map)
+    if level == "spans":
+        return _span_rows(stored, score_map)
+    return [_trace_row(item, score_map.get(item["trace"].request_id, [])) for item in stored]
+
+
+def _trace_row(item: dict[str, Any], scores: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     trace: Trace = item["trace"]
-    recorded = item.get("created_at") or "—"
     row: dict[str, Any] = {
-        "request_id": trace.request_id,
+        "href": "/logs/traces/" + quote(trace.request_id, safe=""),
+        "created_at": str(item.get("created_at") or "—"),
         "name": trace.name,
-        "recorded_at": str(recorded),
-        "status": _trace_status(trace),
-        "intent": _trace_intent(trace),
         "input": _chat_input(trace),
         "output": _chat_output(trace),
+        "external_id": trace.request_id,
+        "request_id": trace.request_id,
     }
     for metric_id in _TABLE_METRICS:
         row[metric_id] = _metric_summary(scores, metric_id)
     return row
 
 
-def _trace_intent(trace: Trace) -> str:
-    for span in trace.spans:
-        intent = span.metadata.get("intent", "").strip()
-        if intent:
-            return intent
-    return "—"
-
-
-def _trace_status(trace: Trace) -> str:
-    for span in trace.spans:
-        if _is_layer8(span):
-            return span.metadata.get("status", "").strip() or "—"
-    return "—"
-
-
-def _selected_scores(store: TraceStore, selected: str | None) -> list[dict[str, Any]]:
-    """Scores of the open trace. A missing database file stays missing."""
-    if not selected:
-        return []
-    found = store.scores_for(selected)
-    return list(found or [])
-
-
-def _detail_for(
+def _session_rows(
     stored: list[dict[str, Any]],
-    selected: str | None,
-    scores: Sequence[Mapping[str, Any]],
-    span: int | None,
-) -> str:
-    if not selected:
-        return ""
+    score_map: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in stored:
+        groups.setdefault(item["trace"].session_id, []).append(item)
+    rows: list[dict[str, Any]] = []
+    for session_id, items in groups.items():
+        first = items[0]
+        last = items[-1]
+        scores = score_map.get(last["trace"].request_id, [])
+        row: dict[str, Any] = {
+            "href": "/logs/sessions/" + quote(session_id, safe=""),
+            "created_at": str(first.get("created_at") or "—"),
+            "name": f"session ({len(items)})",
+            "input": _chat_input(first["trace"]),
+            "output": _chat_output(last["trace"]),
+            "external_id": session_id,
+            "request_id": last["trace"].request_id,
+        }
+        for metric_id in _TABLE_METRICS:
+            row[metric_id] = _metric_summary(scores, metric_id)
+        rows.append(row)
+    return rows
+
+
+def _span_rows(
+    stored: list[dict[str, Any]],
+    score_map: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     for item in stored:
         trace: Trace = item["trace"]
-        if trace.request_id == selected:
-            return _session(trace, scores, span)
-    safe = escape(selected)
-    return f'<div id="trace-detail"><p>Trace introuvable : {safe}</p></div>'
+        scores = score_map.get(trace.request_id, [])
+        by_span = _scores_by_span(scores)
+        for index, span in enumerate(trace.spans):
+            row: dict[str, Any] = {
+                "href": f"/logs/traces/{quote(trace.request_id, safe='')}?span={index}",
+                "created_at": str(item.get("created_at") or "—"),
+                "name": span.name,
+                "input": _truncate(span.input_masked),
+                "output": _truncate(span.output_masked) or "—",
+                "external_id": f"{trace.request_id}#{index}",
+                "request_id": trace.request_id,
+            }
+            for metric_id in _TABLE_METRICS:
+                row[metric_id] = _metric_summary(by_span.get(index, []), metric_id)
+            rows.append(row)
+    return rows
 
 
-def _list_html(rows: list[dict[str, Any]], selected: str | None) -> str:
+def _search_blob(row: Mapping[str, Any]) -> str:
+    parts = [
+        str(row.get("name", "")),
+        str(row.get("input", "")),
+        str(row.get("output", "")),
+        str(row.get("external_id", "")),
+        str(row.get("request_id", "")),
+    ]
+    return " ".join(parts).lower()
+
+
+def _logs_tabs() -> str:
+    return (
+        '<div class="page-tabs">'
+        '<a class="active" href="/logs">Logs</a>'
+        '<span class="disabled">Trends</span>'
+        '<span class="disabled">Agent graph</span>'
+        '<span class="disabled">Signals</span>'
+        '<span class="disabled">Controls</span>'
+        '<span class="disabled">Alerts</span>'
+        "</div>"
+    )
+
+
+def _toolbar(level: str, counts: Mapping[str, int], q: str) -> str:
+    def chip(key: str, label: str, n: int) -> str:
+        active = "active" if level == key else ""
+        return (
+            f'<a class="chip {active}" href="/logs?level={key}">'
+            f"{escape(label)} ({n})</a>"
+        )
+
+    return (
+        '<form class="toolbar" method="get" action="/logs">'
+        f'<input type="hidden" name="level" value="{escape(level)}">'
+        '<a class="chip" href="/logs">Default View</a>'
+        + chip("sessions", "Sessions", counts["sessions"])
+        + chip("traces", "Traces", counts["traces"])
+        + chip("spans", "Spans", counts["spans"])
+        + '<input class="search" type="search" name="q" '
+        f'placeholder="Search" value="{escape(q)}">'
+        "</form>"
+    )
+
+
+def _table(rows: list[dict[str, Any]], level: str) -> str:
     if not rows:
         return (
-            '<table id="trace-list"><tbody><tr>'
-            "<td>Aucune trace sur le stream gateway.</td>"
-            "</tr></tbody></table>"
+            '<div class="surface empty" id="trace-list">'
+            "<p>No events on this log stream yet.</p>"
+            '<p><a class="btn-primary" href="/chat">Open Chat to create a trace</a></p>'
+            "</div>"
         )
-    head = "".join(f"<th>{escape(_METRIC_NAMES[metric_id])}</th>" for metric_id in _TABLE_METRICS)
+    head = "".join(
+        f'<th><span class="ai" aria-hidden="true">✦</span>'
+        f"{escape(_METRIC_NAMES[metric_id])}</th>"
+        for metric_id in _TABLE_METRICS
+    )
     body: list[str] = []
     for row in rows:
-        current = ' aria-current="true"' if row["request_id"] == selected else ""
-        href = "/?trace=" + quote(str(row["request_id"]), safe="")
-        recorded = escape(str(row["recorded_at"]))
+        href = escape(str(row["href"]))
+        recorded = escape(str(row["created_at"]))
         cells = [
-            f'<td><a href="{href}"{current}>'
-            f'<span class="heure">heure <time datetime="{recorded}">{recorded}</time></span>'
-            f'<span class="request-id">identifiant {escape(str(row["request_id"]))}</span>'
-            f'<span class="trace-name">{escape(str(row["name"]))}</span>'
-            f'<span class="trace-status">statut {escape(str(row["status"]))}</span>'
-            f'<span class="intent">intent {escape(str(row["intent"]))}</span>'
-            "</a></td>",
-            f'<td class="clip">{escape(str(row["input"]))}</td>',
-            f'<td class="clip">{escape(str(row["output"])) or "—"}</td>',
+            "<td><input type=\"checkbox\" disabled aria-label=\"Select row\"></td>",
+            f'<td><a class="row-link" href="{href}">'
+            f'<time datetime="{recorded}">{recorded}</time></a></td>',
+            f'<td class="clip"><a class="row-link" href="{href}">'
+            f'{escape(str(row["name"]))}</a></td>',
+            f'<td class="clip" title="{escape(str(row["input"]))}">'
+            f'{escape(str(row["input"]))}</td>',
+            f'<td class="clip" title="{escape(str(row["output"]))}">'
+            f'{escape(str(row["output"])) or "—"}</td>',
+            f'<td class="clip">{escape(str(row["external_id"]))}</td>',
         ]
         for metric_id in _TABLE_METRICS:
             text, kind = row[metric_id]
-            cells.append(f'<td>{_pill(text, kind)}</td>')
-        body.append("<tr>" + "".join(cells) + "</tr>")
+            cells.append(f"<td>{_pill(text, kind)}</td>")
+        body.append(f'<tr data-level="{escape(level)}">' + "".join(cells) + "</tr>")
     return (
-        '<table id="trace-list">'
+        '<div class="surface">'
+        '<table id="trace-list" class="logs">'
         "<thead><tr>"
-        "<th>Trace</th><th>Input</th><th>Output</th>"
+        "<th></th><th>Created</th><th>Name</th><th>Input</th><th>Output</th>"
+        "<th>External Id</th>"
         f"{head}"
         "</tr></thead>"
-        f'<tbody>{"".join(body)}</tbody>'
+        f"<tbody>{''.join(body)}</tbody>"
         "</table>"
+        "</div>"
     )
+
+
+def _pager(level: str, q: str, page: int, pages: int) -> str:
+    if pages <= 1:
+        return ""
+    q_param = f"&q={quote(q)}" if q else ""
+    prev_href = f"/logs?level={level}&page={page - 1}{q_param}" if page > 1 else ""
+    next_href = f"/logs?level={level}&page={page + 1}{q_param}" if page < pages else ""
+    prev = f'<a href="{prev_href}">Previous</a>' if prev_href else "<span>Previous</span>"
+    nxt = f'<a href="{next_href}">Next</a>' if next_href else "<span>Next</span>"
+    nums = "".join(
+        f'<span class="current">{i}</span>'
+        if i == page
+        else f'<a href="/logs?level={level}&page={i}{q_param}">{i}</a>'
+        for i in range(1, pages + 1)
+    )
+    return f'<div class="pager">{prev}{nums}{nxt}</div>'
 
 
 def _session(trace: Trace, scores: Sequence[Mapping[str, Any]], span: int | None) -> str:
     chosen = span if span is not None and 0 <= span < len(trace.spans) else None
     visible = scores if chosen is None else _scores_by_span(scores).get(chosen, [])
     return (
-        '<div class="session">'
+        '<div class="detail-layout session">'
         + _tree(trace, chosen)
-        + '<div id="trace-detail">'
+        + '<div id="trace-detail" class="panel">'
         + _interaction(trace, chosen)
         + "</div>"
         + _metric_panel(visible)
@@ -364,21 +619,163 @@ def _session(trace: Trace, scores: Sequence[Mapping[str, Any]], span: int | None
     )
 
 
-def _grouped(trace: Trace) -> list[tuple[int | None, list[tuple[int, Span]]]]:
-    def sort_key(pair: tuple[int, Span]) -> tuple[bool, int, int]:
-        index, span = pair
-        layer = _layer_number(span)
-        if layer is None:
-            return (True, 0, index)
-        return (False, layer, index)
+def _tree(trace: Trace, chosen: int | None) -> str:
+    items = [
+        f'<li><a href="/logs/traces/{quote(trace.request_id, safe="")}"'
+        f'{" aria-current=\"true\"" if chosen is None else ""}>'
+        f"{escape(trace.name)}</a></li>"
+    ]
+    for index, span in enumerate(trace.spans):
+        current = ' aria-current="true"' if chosen == index else ""
+        href = f"/logs/traces/{quote(trace.request_id, safe='')}?span={index}"
+        items.append(
+            f'<li><a href="{href}"{current}>{escape(span.name)}</a></li>'
+        )
+    return (
+        '<div class="panel">'
+        "<h2>Spans</h2>"
+        f'<ul class="span-tree">{"".join(items)}</ul>'
+        "</div>"
+    )
 
-    groups: list[tuple[int | None, list[tuple[int, Span]]]] = []
-    for index, span in sorted(enumerate(trace.spans), key=sort_key):
-        layer = _layer_number(span)
-        if not groups or groups[-1][0] != layer:
-            groups.append((layer, []))
-        groups[-1][1].append((index, span))
-    return groups
+
+def _interaction(trace: Trace, chosen: int | None) -> str:
+    if chosen is None:
+        return (
+            f"<h2>{escape(trace.name)}</h2>"
+            "<h3>Input</h3>"
+            f"<pre>{escape(_chat_input(trace))}</pre>"
+            "<h3>Output</h3>"
+            f"<pre>{escape(_chat_output(trace)) or '—'}</pre>"
+        )
+    span = trace.spans[chosen]
+    layer = _layer_number(span)
+    layer_attr = "" if layer is None else f' data-layer="{layer}"'
+    blocks = [
+        f'<article data-name="{escape(span.name)}"{layer_attr}>',
+        f"<h2>{escape(span.name)}</h2>",
+        f"<p>type {escape(span.type.value)}</p>",
+        "<h3>Input</h3>",
+        f"<pre>{escape(span.input_masked) or '—'}</pre>",
+        "<h3>Output</h3>",
+        f"<pre>{escape(span.output_masked) or '—'}</pre>",
+    ]
+    if _is_layer8(span):
+        count = escape(span.metadata.get("token_count", ""))
+        status = escape(span.metadata.get("status", ""))
+        blocks.append(f"<p>compteur de tokens <span class=\"token-count\">{count}</span></p>")
+        blocks.append(f"<p>statut <span class=\"layer-status\">{status}</span></p>")
+        blocks.append(f"<p>{REHYDRATION_LABEL}</p>")
+    blocks.append("</article>")
+    return "".join(blocks)
+
+
+def _metric_panel(scores: Sequence[Mapping[str, Any]]) -> str:
+    by_id = {str(row.get("metric_id")): row for row in scores}
+    sections: list[str] = [
+        "<h2>Metrics</h2>",
+        "<p class=\"na\">A dash means this metric was not judged on this interaction.</p>",
+    ]
+    for title, metric_ids in _PANELS:
+        sections.append(f"<h3>{escape(title)}</h3><ul class=\"metric-list\">")
+        for metric_id in metric_ids:
+            name = _METRIC_NAMES.get(metric_id, metric_id)
+            row = by_id.get(metric_id)
+            if row is None:
+                sections.append(f"<li>{escape(name)} <span class=\"na\">—</span></li>")
+                continue
+            text, kind = _metric_summary([row], metric_id)
+            rationale = escape(str(row.get("rationale", "")))
+            sections.append(
+                f"<li>{escape(name)} {_pill(text, kind)}"
+                f'<span class="rationale">{rationale}</span></li>'
+            )
+        sections.append("</ul>")
+    other = [
+        row
+        for row in scores
+        if str(row.get("metric_id")) not in {m for _, ids in _PANELS for m in ids}
+    ]
+    if other:
+        sections.append("<h3>Other</h3><ul class=\"metric-list\">")
+        for row in other:
+            metric_id = str(row.get("metric_id"))
+            name = _METRIC_NAMES.get(metric_id, metric_id)
+            text, kind = _metric_summary([row], metric_id)
+            rationale = escape(str(row.get("rationale", "")))
+            sections.append(
+                f"<li>{escape(name)} {_pill(text, kind)}"
+                f'<span class="rationale">{rationale}</span></li>'
+            )
+        sections.append("</ul>")
+    return '<div class="panel" id="metrics">' + "".join(sections) + "</div>"
+
+
+def _chat_input(trace: Trace) -> str:
+    for span in trace.spans:
+        if span.type in {SpanType.AGENT, SpanType.LLM} and span.input_masked.strip():
+            return _truncate(span.input_masked)
+    for span in trace.spans:
+        if span.input_masked.strip():
+            return _truncate(span.input_masked)
+    return "—"
+
+
+def _chat_output(trace: Trace) -> str:
+    for span in reversed(trace.spans):
+        if _is_layer8(span):
+            continue
+        if span.type in {SpanType.AGENT, SpanType.LLM} and span.output_masked.strip():
+            return _truncate(span.output_masked)
+    for span in reversed(trace.spans):
+        if _is_layer8(span):
+            continue
+        if span.output_masked.strip():
+            return _truncate(span.output_masked)
+    return "—"
+
+
+def _truncate(value: str, limit: int = 72) -> str:
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _metric_summary(
+    scores: Sequence[Mapping[str, Any]],
+    metric_id: str,
+) -> tuple[str, str]:
+    rows = [row for row in scores if str(row.get("metric_id")) == metric_id]
+    if not rows:
+        return ("—", "na")
+    row = rows[0]
+    if row.get("status") == "error":
+        return ("error", "bad")
+    score = _score_number(row.get("score"))
+    passed = row.get("passed") is True
+    if metric_id == "pii":
+        return ("true" if passed else "false", "ok" if passed else "bad")
+    if score is None:
+        return ("—", "na")
+    if metric_id in {"completeness", "context_adherence"} or (
+        isinstance(score, float) and score not in {0.0, 1.0}
+    ):
+        pct = f"{int(round(score * 100))}%"
+        return (pct, "ok" if passed or score >= 0.8 else "bad")
+    label = "true" if passed else "false"
+    return (label, "ok" if passed else "bad")
+
+
+def _pill(text: str, kind: str) -> str:
+    if kind == "na" or text in {"—", "-", "N/A"}:
+        return f'<span class="na">{escape(text)}</span>'
+    klass = {
+        "ok": "badge badge-ok",
+        "bad": "badge badge-bad",
+        "neutral": "badge badge-neutral",
+    }.get(kind, "badge badge-neutral")
+    return f'<span class="{klass}">{escape(text)}</span>'
 
 
 def _scores_by_span(
@@ -391,174 +788,6 @@ def _scores_by_span(
             continue
         grouped.setdefault(index, []).append(row)
     return grouped
-
-
-def _tree(trace: Trace, selected_span: int | None) -> str:
-    href = "/?trace=" + quote(trace.request_id, safe="")
-    root_current = ' aria-current="true"' if selected_span is None else ""
-    items = [
-        f'<a class="tree-root" href="{href}"{root_current}>{escape(trace.name)}</a>',
-        '<ol class="tree">',
-    ]
-    for _layer, spans in _grouped(trace):
-        for index, span in spans:
-            current = ' aria-current="true"' if index == selected_span else ""
-            items.append(
-                "<li>"
-                f'<a href="{href}&amp;span={index}"{current} data-span="{index}">'
-                f"{escape(span.name)}</a>"
-                "</li>"
-            )
-    items.append("</ol>")
-    return '<nav id="span-tree">' + "".join(items) + "</nav>"
-
-
-def _interaction(trace: Trace, span_index: int | None) -> str:
-    if span_index is None:
-        incoming = _chat_input(trace)
-        outgoing = _chat_output(trace)
-        blocks = [
-            f'<article data-name="{escape(trace.name)}">',
-            f"<h2>{escape(trace.name)}</h2>",
-            _masked("Input", incoming),
-            _masked("Output", outgoing),
-        ]
-        if not outgoing:
-            blocks.append(f"<p>{_ANSWER_ABSENT}</p>")
-    else:
-        span = trace.spans[span_index]
-        layer = _layer_number(span)
-        layer_attr = "" if layer is None else f' data-layer="{layer}"'
-        blocks = [
-            f'<article data-name="{escape(span.name)}"{layer_attr}>',
-            f"<h2>{escape(span.name)}</h2>",
-            f"<p>type {escape(span.type.value)}</p>",
-            _masked("Input", span.input_masked),
-            _masked("Output", span.output_masked),
-        ]
-        if _is_layer8(span):
-            count = escape(span.metadata.get("token_count", ""))
-            status = escape(span.metadata.get("status", ""))
-            blocks.append(
-                f'<p>compteur de tokens <span class="token-count">{count}</span></p>'
-            )
-            blocks.append(f'<p>statut <span class="layer-status">{status}</span></p>')
-            blocks.append(f"<p>{REHYDRATION_LABEL}</p>")
-        elif not span.output_masked.strip():
-            blocks.append(f"<p>{_ANSWER_ABSENT}</p>")
-    blocks.append("</article>")
-    return "".join(blocks)
-
-
-def _metric_panel(scores: Sequence[Mapping[str, Any]]) -> str:
-    shown: set[str] = set()
-    groups: list[str] = []
-    for title, metric_ids in _PANELS:
-        shown.update(metric_ids)
-        groups.append(_metric_group(title, metric_ids, scores))
-    extra = [
-        str(row.get("metric_id", ""))
-        for row in scores
-        if str(row.get("metric_id", "")) and str(row.get("metric_id")) not in shown
-    ]
-    if extra:
-        groups.append(_metric_group("Autres", tuple(dict.fromkeys(extra)), scores))
-    note = (
-        "<p>Un tiret signifie que cette métrique n'a pas été jugée "
-        "sur cette interaction.</p>"
-    )
-    return '<aside id="metrics"><h2>Metrics</h2>' + note + "".join(groups) + "</aside>"
-
-
-def _metric_group(
-    title: str,
-    metric_ids: Sequence[str],
-    scores: Sequence[Mapping[str, Any]],
-) -> str:
-    items: list[str] = []
-    for metric_id in metric_ids:
-        text, kind = _metric_summary(scores, metric_id)
-        label = escape(_METRIC_NAMES.get(metric_id, metric_id))
-        reasons = _rationales(scores, metric_id)
-        reason = "".join(f'<p class="jugement">{escape(item)}</p>' for item in reasons)
-        items.append(
-            "<li>"
-            f'<span class="metric-name">{label}</span>'
-            f"{_pill(text, kind)}"
-            f"{reason}"
-            "</li>"
-        )
-    return (
-        '<section class="metric-group">'
-        f"<h3>{escape(title)}</h3>"
-        f'<ul>{"".join(items)}</ul>'
-        "</section>"
-    )
-
-
-def _rationales(scores: Sequence[Mapping[str, Any]], metric_id: str) -> list[str]:
-    found: list[str] = []
-    for row in scores:
-        if str(row.get("metric_id", "")) != metric_id or row.get("status") == "error":
-            continue
-        text = str(row.get("rationale", "")).strip()
-        if text and text not in found:
-            found.append(text)
-    return found
-
-
-def _pill(text: str, kind: str) -> str:
-    return f'<span class="pill {escape(kind)}">{escape(text)}</span>'
-
-
-def _metric_summary(
-    scores: Sequence[Mapping[str, Any]],
-    metric_id: str,
-) -> tuple[str, str]:
-    rows = [row for row in scores if str(row.get("metric_id", "")) == metric_id]
-    ok = [row for row in rows if row.get("status") != "error"]
-    if not ok:
-        if rows:
-            return ("erreur de juge", "error")
-        return ("—", "empty")
-    if metric_id in {"completeness", "context_adherence"}:
-        numbers = [
-            number
-            for number in (_score_number(row.get("score")) for row in ok)
-            if number is not None
-        ]
-        if not numbers:
-            return ("—", "empty")
-        percent = round(sum(numbers) / len(numbers) * 100)
-        kind = "true" if percent >= 50 else "false"
-        return (f"{percent}%", kind)
-    if any(row.get("passed") is False for row in ok):
-        return ("false", "false")
-    if all(row.get("passed") is True for row in ok):
-        return ("true", "true")
-    return ("—", "empty")
-
-
-def _chat_input(trace: Trace) -> str:
-    for span in trace.spans:
-        if _layer_number(span) == 3 and span.input_masked.strip():
-            return span.input_masked
-    for span in trace.spans:
-        if span.input_masked.strip() and not _is_layer8(span):
-            return span.input_masked
-    return ""
-
-
-def _chat_output(trace: Trace) -> str:
-    for span in trace.spans:
-        if span.type == SpanType.AGENT and span.output_masked.strip():
-            return span.output_masked
-    return ""
-
-
-def _masked(label: str, value: str) -> str:
-    shown = value if value.strip() else "—"
-    return f"<h2>{escape(label)}</h2><pre class=\"masked\">{escape(shown)}</pre>"
 
 
 def _is_layer8(span: Span) -> bool:
@@ -584,69 +813,3 @@ def _format_unit_score(value: object) -> str:
         raise ValueError("score out of range")
     text = f"{number:.6f}".rstrip("0").rstrip(".")
     return text or "0"
-
-
-def _shell(main: str) -> str:
-    return (
-        "<!DOCTYPE html>"
-        '<html lang="fr">'
-        "<head>"
-        '<meta charset="utf-8">'
-        f"<title>{GATEWAY_PROJECT} · {GATEWAY_STREAM}</title>"
-        "<style>"
-        "body{margin:0;background:#f7f7f8;color:#1c1c1c;"
-        "font:15px/1.45 'Segoe UI',sans-serif;}"
-        "header{display:flex;gap:1.5rem;align-items:center;padding:.8rem 1.25rem;"
-        "background:#fff;border-bottom:1px solid #e6e6e6;}"
-        "header p{margin:0;}"
-        "a{color:#5b21b6;}"
-        ".layout{display:flex;flex-direction:column;gap:1rem;padding:1rem 1.25rem;}"
-        "#trace-list{width:100%;border-collapse:collapse;background:#fff;"
-        "border:1px solid #e6e6e6;border-radius:8px;}"
-        "#trace-list th,#trace-list td{padding:.65rem .75rem;border-bottom:1px solid #eee;"
-        "text-align:left;vertical-align:top;}"
-        "#trace-list thead th{font-size:12px;color:#555;}"
-        "#trace-list a{color:inherit;text-decoration:none;}"
-        "#trace-list .heure{display:block;font-weight:600;color:#111;}"
-        "#trace-list .intent{display:block;color:#5b21b6;font-size:12px;}"
-        "#trace-list .request-id,#trace-list .trace-name,#trace-list .trace-status{"
-        "position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);}"
-        '#trace-list a[aria-current="true"] .heure{color:#5b21b6;}'
-        ".clip{max-width:18rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}"
-        ".session{display:grid;grid-template-columns:16rem minmax(0,1fr) 22rem;"
-        "gap:1rem;align-items:start;}"
-        "#span-tree,#trace-detail,#metrics{background:#fff;border:1px solid #e6e6e6;"
-        "border-radius:8px;padding:.9rem 1rem;}"
-        "#span-tree a{display:block;padding:.28rem .4rem;border-radius:6px;"
-        "text-decoration:none;color:#333;}"
-        '#span-tree a[aria-current="true"]{background:#efeaff;color:#5b21b6;}'
-        "ol.tree{list-style:none;margin:.4rem 0 0;padding:0;}"
-        ".pill{display:inline-block;border-radius:999px;padding:.05rem .55rem;font-size:13px;}"
-        ".pill.true{background:#e7f6ee;color:#137333;}"
-        ".pill.false{background:#fde8e8;color:#b42318;}"
-        ".pill.empty{background:#f4f1ea;color:#666;}"
-        ".pill.error{background:#fff4e5;color:#8a4b08;}"
-        ".metric-group ul{list-style:none;margin:0;padding:0;}"
-        ".metric-group li{padding:.45rem 0;border-bottom:1px solid #f0f0f0;}"
-        ".metric-name{display:inline-block;min-width:11rem;}"
-        ".jugement{margin:.25rem 0 0;color:#333;font-size:13px;}"
-        "pre.masked{white-space:pre-wrap;background:#fff;border:1px solid #e6e6e6;"
-        "border-radius:8px;padding:.75rem;min-height:2.2rem;}"
-        "#experiments{flex:1;background:#fff;border:1px solid #d9d3c7;padding:1rem 1.25rem;}"
-        "#run-comparison{width:100%;border-collapse:collapse;font-size:1.35rem;}"
-        "#run-comparison th,#run-comparison td{padding:.75rem 1rem;"
-        "border-bottom:1px solid #d9d3c7;text-align:left;vertical-align:top;}"
-        "#run-comparison thead th{background:#e7f0ea;}"
-        "#run-comparison small{display:block;font-size:.75em;font-weight:normal;color:#333;}"
-        "</style>"
-        "</head>"
-        "<body>"
-        "<header>"
-        f"<p>projet {GATEWAY_PROJECT}</p>"
-        f"<p>stream {GATEWAY_STREAM}</p>"
-        '<p><a href="/chat">chat</a></p>'
-        '<p><a href="/experiments">expériences</a></p>'
-        "</header>"
-        f'<div class="layout">{main}</div>'
-        "</body></html>"
-    )

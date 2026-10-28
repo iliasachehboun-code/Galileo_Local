@@ -49,8 +49,10 @@ Un jeu de traces déjà stockées. On relance le calcul des métriques, on garde
 
 ## Console
 
-- `GET /chat` — saisie d’un message, réponse Agno.
-- `GET /` — liste des traces du stream, détail en arbre de spans, scores.
+UI alignée sur la console Galileo cloud (spec : `harness/ui/`, référence : `harness/external/galileo_console_ui.md`).
+
+- `GET /logs` — Log stream (Sessions / Traces / Spans, table + métriques).
+- `GET /chat` — générateur de traces (Agno).
 - `GET /experiments` — comparaison de runs.
 
 Bind : `127.0.0.1:8090` par défaut ; `GALILEO_BIND_HOST=0.0.0.0` pour Azure / GCP.
