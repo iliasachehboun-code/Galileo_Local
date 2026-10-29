@@ -15,11 +15,13 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from galileo_local.catalog import default_enabled_ids, metrics_for_cimr_stream
 from galileo_local.code_metrics import PersistedCodeScore, code_scores
 from galileo_local.experiments import DuplicateRun, MissingTrace, pair_scores, public_score
 from galileo_local.judge_metrics import PersistedJudgeScore, judge_scores, prepare_for_storage
 from galileo_local.models import Trace, public_trace_view
 from galileo_local.pii_oracle import find_clear_pii
+from galileo_local.settings import LOG_STREAM, PROJECT_NAME
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -83,6 +85,15 @@ CREATE TABLE IF NOT EXISTS experiment_scores (
     FOREIGN KEY (run_name) REFERENCES experiment_runs (name),
     FOREIGN KEY (request_id) REFERENCES traces (request_id)
 );
+
+CREATE TABLE IF NOT EXISTS stream_metric_toggles (
+    project TEXT NOT NULL,
+    log_stream TEXT NOT NULL,
+    metric_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    PRIMARY KEY (project, log_stream, metric_id),
+    FOREIGN KEY (project, log_stream) REFERENCES log_streams (project, name)
+);
 """
 
 
@@ -123,19 +134,90 @@ class TraceStore:
         and no passing score. No model means no judge row is invented.
         """
         checked = _accepted(trace)
-        scored: list[PersistedCodeScore | PersistedJudgeScore] = list(code_scores(checked))
+        enabled = self.enabled_metric_ids(checked.project, checked.log_stream)
+        scored: list[PersistedCodeScore | PersistedJudgeScore] = list(
+            code_scores(checked, enabled=enabled)
+        )
         if model is not None:
-            scored.extend(judge_scores(checked, model))
+            scored.extend(judge_scores(checked, model, enabled=enabled))
         self._write(checked, scored)
 
     def write_scores(self, trace: Trace, model: Any, *, only_substantive: bool = False) -> None:
         """Replace scores for a trace already stored. The trace body stays."""
         checked = _accepted(trace)
-        scored: list[PersistedCodeScore | PersistedJudgeScore] = list(code_scores(checked))
+        enabled = self.enabled_metric_ids(checked.project, checked.log_stream)
+        scored: list[PersistedCodeScore | PersistedJudgeScore] = list(
+            code_scores(checked, enabled=enabled)
+        )
         if model is not None:
-            scored.extend(judge_scores(checked, model, only_substantive=only_substantive))
+            scored.extend(
+                judge_scores(
+                    checked, model, only_substantive=only_substantive, enabled=enabled
+                )
+            )
         with self._connect() as conn:
             self._replace_scores(conn, checked.request_id, scored)
+
+    def enabled_metric_ids(
+        self,
+        project: str | None = None,
+        log_stream: str | None = None,
+    ) -> frozenset[str]:
+        """Metrics turned on for the log stream. Defaults to the full catalog set."""
+        project = project or PROJECT_NAME
+        log_stream = log_stream or LOG_STREAM
+        allowed = default_enabled_ids()
+        if not self.path.is_file():
+            return allowed
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT metric_id, enabled FROM stream_metric_toggles
+                WHERE project = ? AND log_stream = ?
+                """,
+                (project, log_stream),
+            ).fetchall()
+        if not rows:
+            return allowed
+        chosen = {metric_id for metric_id, on in rows if on and metric_id in allowed}
+        return frozenset(chosen)
+
+    def set_enabled_metric_ids(
+        self,
+        metric_ids: set[str] | frozenset[str],
+        *,
+        project: str | None = None,
+        log_stream: str | None = None,
+    ) -> frozenset[str]:
+        """Persist which catalog stream metrics are active. Returns the stored set."""
+        project = project or PROJECT_NAME
+        log_stream = log_stream or LOG_STREAM
+        allowed = default_enabled_ids()
+        chosen = frozenset(metric_id for metric_id in metric_ids if metric_id in allowed)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO projects (name) VALUES (?)",
+                (project,),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO log_streams (project, name) VALUES (?, ?)",
+                (project, log_stream),
+            )
+            conn.execute(
+                "DELETE FROM stream_metric_toggles WHERE project = ? AND log_stream = ?",
+                (project, log_stream),
+            )
+            conn.executemany(
+                """
+                INSERT INTO stream_metric_toggles (project, log_stream, metric_id, enabled)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (project, log_stream, metric.id, 1 if metric.id in chosen else 0)
+                    for metric in metrics_for_cimr_stream()
+                ],
+            )
+        return chosen
 
     def _write(self, checked: Trace, scored: list[PersistedCodeScore | PersistedJudgeScore]) -> None:
         body = json.dumps(public_trace_view(checked), ensure_ascii=False)

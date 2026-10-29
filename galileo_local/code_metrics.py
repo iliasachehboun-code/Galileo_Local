@@ -47,16 +47,21 @@ class PersistedCodeScore(BaseModel):
         return value
 
 
-def code_scores(trace: Trace) -> list[PersistedCodeScore]:
+def code_scores(
+    trace: Trace,
+    *,
+    enabled: frozenset[str] | None = None,
+) -> list[PersistedCodeScore]:
     """Scores for every active code metric that applies and can be computed.
 
     ``precision_at_k`` is omitted when the retriever span has no labels.
     ``tool_error`` is omitted when the tool span has no readable status.
     Neither omission becomes a score of 1.
+    When ``enabled`` is set, only those metric ids are scored.
     """
     rows: list[PersistedCodeScore] = []
     for index, span in enumerate(trace.spans):
-        for metric in metrics_for_span(span.type.value):
+        for metric in metrics_for_span(span.type.value, enabled=enabled):
             if metric.kind != "code":
                 continue
             scored = _score_metric(metric.id, span)

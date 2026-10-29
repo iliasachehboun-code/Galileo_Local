@@ -61,6 +61,7 @@ def judge_scores(
     model: Any,
     *,
     only_substantive: bool = False,
+    enabled: frozenset[str] | None = None,
 ) -> list[PersistedJudgeScore]:
     """One row per active judge metric that applies to a span.
 
@@ -69,11 +70,12 @@ def judge_scores(
     a foreign metric id, or a rationale the oracle rejects becomes an error row.
     The trace itself is left to the caller. ``only_substantive`` skips spans
     whose output is too short to be the model answer.
+    When ``enabled`` is set, only those metric ids are scored.
     """
     pairs = [
         (index, metric)
         for index, span in enumerate(trace.spans)
-        for metric in metrics_for_span(span.type.value)
+        for metric in metrics_for_span(span.type.value, enabled=enabled)
         if metric.kind == "llm_judge"
         and (not only_substantive or _substantive_answer(span))
     ]

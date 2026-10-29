@@ -6,7 +6,7 @@ from html import escape
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
-from galileo_local.catalog import METRICS
+from galileo_local.catalog import METRICS, metrics_for_cimr_stream
 from galileo_local.models import Span, SpanType, Trace, rehydration_span
 from galileo_local.pii_oracle import find_clear_pii
 from galileo_local.settings import LOG_STREAM, PROJECT_NAME
@@ -25,6 +25,16 @@ _TABLE_METRICS = (
     "reasoning_coherence",
     "pii",
 )
+_FAMILY_LABELS = {
+    "agentic": "Agentic",
+    "expression": "Expression & readability",
+    "response_quality": "Output quality",
+    "rag_retrieval": "RAG retrieval",
+    "rag_generation": "RAG generation",
+    "safety": "Safety & compliance",
+    "multimodal": "Multimodal",
+    "text_to_sql": "Text-to-SQL",
+}
 _PANELS = (
     ("Output Quality", ("correctness", "instruction_adherence", "reasoning_coherence")),
     ("RAG Quality", ("completeness", "context_adherence")),
@@ -137,7 +147,8 @@ def render_logs(
         item["trace"].request_id: _scores(store, item["trace"].request_id) for item in stored
     }
     counts = _counts(stored)
-    rows = _rows_for_level(stored, score_map, level)
+    table_metrics = _table_metric_ids(store)
+    rows = _rows_for_level(stored, score_map, level, table_metrics)
     if q.strip():
         needle = q.strip().lower()
         rows = [row for row in rows if needle in _search_blob(row)]
@@ -150,7 +161,7 @@ def render_logs(
     main = (
         _logs_tabs()
         + _toolbar(level, counts, q)
-        + _table(page_rows, level)
+        + _table(page_rows, level, table_metrics)
         + _pager(level, q, page, pages)
     )
     return render_shell(
@@ -178,7 +189,7 @@ def render_trace_detail(
                 span = None
             body = (
                 '<p class="back"><a href="/logs">← Logs</a></p>'
-                + _session(trace, scores, span)
+                + _session(trace, scores, span, store.enabled_metric_ids())
             )
             return render_shell(
                 title=f"Galileo · {trace.name}",
@@ -220,11 +231,12 @@ def render_session_detail(store: TraceStore, session_id: str) -> str:
     score_map = {
         item["trace"].request_id: _scores(store, item["trace"].request_id) for item in stored
     }
-    rows = _rows_for_level(stored, score_map, "traces")
+    table_metrics = _table_metric_ids(store)
+    rows = _rows_for_level(stored, score_map, "traces", table_metrics)
     body = (
         '<p class="back"><a href="/logs?level=sessions">← Logs</a></p>'
         f"<h1>Session {escape(session_id)}</h1>"
-        + _table(rows, "traces")
+        + _table(rows, "traces", table_metrics)
     )
     return render_shell(
         title="Galileo · Session",
@@ -261,26 +273,113 @@ def render_overview(store: TraceStore) -> str:
     )
 
 
-def render_metrics_page() -> str:
-    items: list[str] = []
-    for metric in METRICS:
-        if not metric.cimr_stream:
-            continue
-        items.append(
-            "<li>"
-            f"<strong>{escape(metric.name)}</strong> "
-            f'<span class="na">({escape(metric.id)} · {escape(metric.kind)})</span>'
-            "</li>"
+def render_trends(store: TraceStore) -> str:
+    """System Metrics chrome matching Galileo Trends (counts from local stream)."""
+    counts = _counts(_load_stream(store))
+    cards = (
+        ("API Failures", 0, "COUNT"),
+        ("Traces Count", counts["traces"], "COUNT"),
+        ("Sessions", counts["sessions"], "COUNT"),
+        ("Spans", counts["spans"], "COUNT"),
+        ("Input Tokens", "—", "SUM"),
+        ("Agent Cost", "—", "SUM"),
+    )
+    grid = "".join(
+        '<div class="trend-card">'
+        f'<div class="title">{escape(title)}</div>'
+        f'<div class="value">{escape(str(value))}'
+        f'<span class="pill">{escape(agg)}</span></div>'
+        f'<div class="spark" aria-hidden="true">{_sparkline(i)}</div>'
+        "</div>"
+        for i, (title, value, agg) in enumerate(cards)
+    )
+    main = (
+        _logs_tabs(active="trends")
+        + '<div class="toolbar">'
+        '<a class="chip" href="/logs/trends">Default View</a>'
+        '<span class="chip">Last month</span>'
+        '<span class="chip">Group by</span>'
+        '<span class="chip">Filters</span>'
+        '<div class="search-wrap">'
+        '<button type="button" class="btn-ghost is-disabled" disabled>Manual</button>'
+        "</div></div>"
+        '<div class="subtabs">'
+        '<span class="on">System Metrics</span>'
+        "<span>RAG Quality</span><span>Custom Metrics</span>"
+        "<span>Safety Metrics</span><span>Security</span>"
+        "<span>Output Quality</span></div>"
+        f'<div class="trends-grid">{grid}</div>'
+    )
+    return render_shell(
+        title=f"Galileo · Trends: {LOG_STREAM}",
+        active="trends",
+        breadcrumb=breadcrumb_logs(),
+        main=main,
+    )
+
+
+def render_metrics_page(
+    store: TraceStore,
+    *,
+    saved: bool = False,
+) -> str:
+    enabled = store.enabled_metric_ids()
+    by_family: dict[str, list] = {}
+    for metric in metrics_for_cimr_stream():
+        by_family.setdefault(metric.family, []).append(metric)
+
+    sections: list[str] = []
+    for family, metrics in by_family.items():
+        rows = "".join(
+            '<label class="metric-toggle">'
+            f'<input type="checkbox" name="metric" value="{escape(metric.id)}" '
+            f'{"checked" if metric.id in enabled else ""}>'
+            '<span class="metric-toggle-ui" aria-hidden="true"></span>'
+            '<span class="metric-toggle-body">'
+            f'<strong>{escape(metric.name)}</strong>'
+            f'<span class="na">{escape(metric.id)} · {escape(metric.kind)}</span>'
+            "</span></label>"
+            for metric in metrics
         )
+        label = escape(_FAMILY_LABELS.get(family, family.replace("_", " ").title()))
+        sections.append(
+            f'<section class="metric-family"><h2>{label}</h2>'
+            f'<div class="metric-toggles">{rows}</div></section>'
+        )
+
+    n_on = len(enabled)
+    n_all = len(list(metrics_for_cimr_stream()))
+    banner = (
+        '<p class="metrics-saved">Preferences saved. New traces will use this set.</p>'
+        if saved
+        else ""
+    )
     body = (
         "<h1>Configure Metrics</h1>"
-        "<p>Active text metrics on this log stream (read-only in v1).</p>"
-        f'<ul class="metric-list">{"".join(items)}</ul>'
+        f"<p>Enable or disable metrics on log stream "
+        f"<strong>{escape(LOG_STREAM)}</strong>. "
+        f"Currently <strong>{n_on}</strong> / {n_all} active. "
+        "Changes apply to newly scored traces.</p>"
+        f"{banner}"
+        '<form class="metrics-form" method="post" action="/metrics">'
+        '<div class="metrics-actions">'
+        '<button type="button" class="btn-ghost" onclick="'
+        "document.querySelectorAll('.metrics-form input[type=checkbox]')"
+        ".forEach(c=>c.checked=true)\">Select all</button>"
+        '<button type="button" class="btn-ghost" onclick="'
+        "document.querySelectorAll('.metrics-form input[type=checkbox]')"
+        ".forEach(c=>c.checked=false)\">Disable all</button>"
+        '<button type="submit" class="btn-primary">Save metrics</button>'
+        "</div>"
+        + "".join(sections)
+        + '<div class="metrics-actions">'
+        '<button type="submit" class="btn-primary">Save metrics</button>'
+        "</div></form>"
     )
     return render_shell(
         title="Galileo · Metrics",
         active="metrics",
-        breadcrumb=breadcrumb_plain("Metrics"),
+        breadcrumb=breadcrumb_plain("Configure Metrics"),
         main=body,
         header_action='<a class="btn-primary" href="/logs">Back to Logs</a>',
     )
@@ -416,19 +515,32 @@ def _counts(stored: list[dict[str, Any]]) -> dict[str, int]:
     return {"sessions": len(sessions), "traces": len(stored), "spans": spans}
 
 
+def _table_metric_ids(store: TraceStore) -> tuple[str, ...]:
+    enabled = store.enabled_metric_ids()
+    return tuple(metric_id for metric_id in _TABLE_METRICS if metric_id in enabled)
+
+
 def _rows_for_level(
     stored: list[dict[str, Any]],
     score_map: Mapping[str, Sequence[Mapping[str, Any]]],
     level: str,
+    table_metrics: Sequence[str],
 ) -> list[dict[str, Any]]:
     if level == "sessions":
-        return _session_rows(stored, score_map)
+        return _session_rows(stored, score_map, table_metrics)
     if level == "spans":
-        return _span_rows(stored, score_map)
-    return [_trace_row(item, score_map.get(item["trace"].request_id, [])) for item in stored]
+        return _span_rows(stored, score_map, table_metrics)
+    return [
+        _trace_row(item, score_map.get(item["trace"].request_id, []), table_metrics)
+        for item in stored
+    ]
 
 
-def _trace_row(item: dict[str, Any], scores: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _trace_row(
+    item: dict[str, Any],
+    scores: Sequence[Mapping[str, Any]],
+    table_metrics: Sequence[str],
+) -> dict[str, Any]:
     trace: Trace = item["trace"]
     row: dict[str, Any] = {
         "href": "/logs/traces/" + quote(trace.request_id, safe=""),
@@ -439,7 +551,7 @@ def _trace_row(item: dict[str, Any], scores: Sequence[Mapping[str, Any]]) -> dic
         "external_id": trace.request_id,
         "request_id": trace.request_id,
     }
-    for metric_id in _TABLE_METRICS:
+    for metric_id in table_metrics:
         row[metric_id] = _metric_summary(scores, metric_id)
     return row
 
@@ -447,6 +559,7 @@ def _trace_row(item: dict[str, Any], scores: Sequence[Mapping[str, Any]]) -> dic
 def _session_rows(
     stored: list[dict[str, Any]],
     score_map: Mapping[str, Sequence[Mapping[str, Any]]],
+    table_metrics: Sequence[str],
 ) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for item in stored:
@@ -465,7 +578,7 @@ def _session_rows(
             "external_id": session_id,
             "request_id": last["trace"].request_id,
         }
-        for metric_id in _TABLE_METRICS:
+        for metric_id in table_metrics:
             row[metric_id] = _metric_summary(scores, metric_id)
         rows.append(row)
     return rows
@@ -474,6 +587,7 @@ def _session_rows(
 def _span_rows(
     stored: list[dict[str, Any]],
     score_map: Mapping[str, Sequence[Mapping[str, Any]]],
+    table_metrics: Sequence[str],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in stored:
@@ -490,7 +604,7 @@ def _span_rows(
                 "external_id": f"{trace.request_id}#{index}",
                 "request_id": trace.request_id,
             }
-            for metric_id in _TABLE_METRICS:
+            for metric_id in table_metrics:
                 row[metric_id] = _metric_summary(by_span.get(index, []), metric_id)
             rows.append(row)
     return rows
@@ -507,15 +621,26 @@ def _search_blob(row: Mapping[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
-def _logs_tabs() -> str:
+def _logs_tabs(*, active: str = "logs") -> str:
+    def tab(key: str, href: str, label: str, ico: str) -> str:
+        klass = "active" if active == key else ""
+        return (
+            f'<a class="{klass}" href="{href}">'
+            f'<span class="tab-ico" aria-hidden="true">{ico}</span>{escape(label)}</a>'
+        )
+
     return (
         '<div class="page-tabs">'
-        '<a class="active" href="/logs">Logs</a>'
-        '<span class="disabled">Trends</span>'
-        '<span class="disabled">Agent graph</span>'
-        '<span class="disabled">Signals</span>'
-        '<span class="disabled">Controls</span>'
-        '<span class="disabled">Alerts</span>'
+        + tab("logs", "/logs", "Logs", "☰")
+        + tab("trends", "/logs/trends", "Trends", "↗")
+        + '<span class="disabled"><span class="tab-ico" aria-hidden="true">◈</span>'
+        "Agent graph</span>"
+        '<span class="disabled"><span class="tab-ico" aria-hidden="true">◉</span>'
+        "Signals</span>"
+        '<span class="disabled"><span class="tab-ico" aria-hidden="true">⚙</span>'
+        "Controls</span>"
+        '<span class="disabled"><span class="tab-ico" aria-hidden="true">⚠</span>'
+        "Alerts</span>"
         "</div>"
     )
 
@@ -525,23 +650,32 @@ def _toolbar(level: str, counts: Mapping[str, int], q: str) -> str:
         active = "active" if level == key else ""
         return (
             f'<a class="chip {active}" href="/logs?level={key}">'
-            f"{escape(label)} ({n})</a>"
+            f'{escape(label)} <span class="count">{n}</span></a>'
         )
 
     return (
         '<form class="toolbar" method="get" action="/logs">'
         f'<input type="hidden" name="level" value="{escape(level)}">'
-        '<a class="chip" href="/logs">Default View</a>'
+        '<a class="chip" href="/logs">Default View ▾</a>'
         + chip("sessions", "Sessions", counts["sessions"])
         + chip("traces", "Traces", counts["traces"])
         + chip("spans", "Spans", counts["spans"])
+        + '<span class="chip">Last month</span>'
+        + '<span class="chip">Filters</span>'
+        + '<div class="search-wrap">'
         + '<input class="search" type="search" name="q" '
-        f'placeholder="Search" value="{escape(q)}">'
-        "</form>"
+        f'placeholder="Search logs" value="{escape(q)}">'
+        + '<button type="button" class="btn-ghost is-disabled" disabled>'
+        "Compute Metrics</button>"
+        + "</div></form>"
     )
 
 
-def _table(rows: list[dict[str, Any]], level: str) -> str:
+def _table(
+    rows: list[dict[str, Any]],
+    level: str,
+    table_metrics: Sequence[str],
+) -> str:
     if not rows:
         return (
             '<div class="surface empty" id="trace-list">'
@@ -550,16 +684,18 @@ def _table(rows: list[dict[str, Any]], level: str) -> str:
             "</div>"
         )
     head = "".join(
-        f'<th><span class="ai" aria-hidden="true">✦</span>'
-        f"{escape(_METRIC_NAMES[metric_id])}</th>"
-        for metric_id in _TABLE_METRICS
+        f'<th><span class="ai" aria-hidden="true"></span>'
+        f"{escape(_METRIC_NAMES[metric_id])}"
+        '<span class="sort" aria-hidden="true">↕</span>'
+        '<span class="agg">AVG</span></th>'
+        for metric_id in table_metrics
     )
     body: list[str] = []
     for row in rows:
         href = escape(str(row["href"]))
         recorded = escape(str(row["created_at"]))
         cells = [
-            "<td><input type=\"checkbox\" disabled aria-label=\"Select row\"></td>",
+            '<td><input type="checkbox" disabled aria-label="Select row"></td>',
             f'<td><a class="row-link" href="{href}">'
             f'<time datetime="{recorded}">{recorded}</time></a></td>',
             f'<td class="clip"><a class="row-link" href="{href}">'
@@ -568,9 +704,10 @@ def _table(rows: list[dict[str, Any]], level: str) -> str:
             f'{escape(str(row["input"]))}</td>',
             f'<td class="clip" title="{escape(str(row["output"]))}">'
             f'{escape(str(row["output"])) or "—"}</td>',
+            '<td class="na">—</td>',
             f'<td class="clip">{escape(str(row["external_id"]))}</td>',
         ]
-        for metric_id in _TABLE_METRICS:
+        for metric_id in table_metrics:
             text, kind = row[metric_id]
             cells.append(f"<td>{_pill(text, kind)}</td>")
         body.append(f'<tr data-level="{escape(level)}">' + "".join(cells) + "</tr>")
@@ -578,8 +715,11 @@ def _table(rows: list[dict[str, Any]], level: str) -> str:
         '<div class="surface">'
         '<table id="trace-list" class="logs">'
         "<thead><tr>"
-        "<th></th><th>Created</th><th>Name</th><th>Input</th><th>Output</th>"
-        "<th>External Id</th>"
+        "<th></th>"
+        '<th>Created<span class="sort" aria-hidden="true">↕</span></th>'
+        '<th>Name<span class="sort" aria-hidden="true">↕</span></th>'
+        "<th>Input</th><th>Output</th>"
+        "<th>Error Message</th><th>External Id</th>"
         f"{head}"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -594,8 +734,10 @@ def _pager(level: str, q: str, page: int, pages: int) -> str:
     q_param = f"&q={quote(q)}" if q else ""
     prev_href = f"/logs?level={level}&page={page - 1}{q_param}" if page > 1 else ""
     next_href = f"/logs?level={level}&page={page + 1}{q_param}" if page < pages else ""
-    prev = f'<a href="{prev_href}">Previous</a>' if prev_href else "<span>Previous</span>"
-    nxt = f'<a href="{next_href}">Next</a>' if next_href else "<span>Next</span>"
+    prev = (
+        f'<a href="{prev_href}">‹ Previous</a>' if prev_href else "<span>‹ Previous</span>"
+    )
+    nxt = f'<a href="{next_href}">Next ›</a>' if next_href else "<span>Next ›</span>"
     nums = "".join(
         f'<span class="current">{i}</span>'
         if i == page
@@ -605,7 +747,27 @@ def _pager(level: str, q: str, page: int, pages: int) -> str:
     return f'<div class="pager">{prev}{nums}{nxt}</div>'
 
 
-def _session(trace: Trace, scores: Sequence[Mapping[str, Any]], span: int | None) -> str:
+def _sparkline(seed: int) -> str:
+    """Decorative SVG path for Trends cards (not live time-series)."""
+    points = []
+    y = 40 - (seed * 3) % 18
+    for x in range(0, 101, 8):
+        y = max(8, min(48, y + ((x + seed * 7) % 11) - 5))
+        points.append(f"{x},{y}")
+    path = " ".join(points)
+    return (
+        '<svg viewBox="0 0 100 56" preserveAspectRatio="none">'
+        '<polyline fill="none" stroke="#6366f1" stroke-width="1.6" '
+        f'points="{path}"/></svg>'
+    )
+
+
+def _session(
+    trace: Trace,
+    scores: Sequence[Mapping[str, Any]],
+    span: int | None,
+    enabled: frozenset[str],
+) -> str:
     chosen = span if span is not None and 0 <= span < len(trace.spans) else None
     visible = scores if chosen is None else _scores_by_span(scores).get(chosen, [])
     return (
@@ -614,7 +776,7 @@ def _session(trace: Trace, scores: Sequence[Mapping[str, Any]], span: int | None
         + '<div id="trace-detail" class="panel">'
         + _interaction(trace, chosen)
         + "</div>"
-        + _metric_panel(visible)
+        + _metric_panel(visible, enabled)
         + "</div>"
     )
 
@@ -670,15 +832,22 @@ def _interaction(trace: Trace, chosen: int | None) -> str:
     return "".join(blocks)
 
 
-def _metric_panel(scores: Sequence[Mapping[str, Any]]) -> str:
+def _metric_panel(
+    scores: Sequence[Mapping[str, Any]],
+    enabled: frozenset[str],
+) -> str:
     by_id = {str(row.get("metric_id")): row for row in scores}
     sections: list[str] = [
         "<h2>Metrics</h2>",
-        "<p class=\"na\">A dash means this metric was not judged on this interaction.</p>",
+        '<p class="na">A dash means this metric was not judged on this interaction. '
+        'Disabled metrics are hidden — configure them under Metrics.</p>',
     ]
     for title, metric_ids in _PANELS:
+        active_ids = [metric_id for metric_id in metric_ids if metric_id in enabled]
+        if not active_ids:
+            continue
         sections.append(f"<h3>{escape(title)}</h3><ul class=\"metric-list\">")
-        for metric_id in metric_ids:
+        for metric_id in active_ids:
             name = _METRIC_NAMES.get(metric_id, metric_id)
             row = by_id.get(metric_id)
             if row is None:
@@ -694,7 +863,8 @@ def _metric_panel(scores: Sequence[Mapping[str, Any]]) -> str:
     other = [
         row
         for row in scores
-        if str(row.get("metric_id")) not in {m for _, ids in _PANELS for m in ids}
+        if str(row.get("metric_id")) in enabled
+        and str(row.get("metric_id")) not in {m for _, ids in _PANELS for m in ids}
     ]
     if other:
         sections.append("<h3>Other</h3><ul class=\"metric-list\">")

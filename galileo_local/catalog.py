@@ -83,14 +83,28 @@ CUSTOM_METRIC_KINDS: tuple[str, ...] = ("llm_judge", "code", "composite")
 
 
 def metrics_for_cimr_stream() -> tuple[MetricSpec, ...]:
-    """Metrics enabled on the CIMR gateway log stream."""
+    """Metrics available on the CIMR gateway log stream (catalog defaults)."""
     return tuple(metric for metric in METRICS if metric.cimr_stream)
 
 
-def metrics_for_span(span_type: str) -> tuple[MetricSpec, ...]:
-    """CIMR-stream metrics whose span types include ``span_type``."""
+def default_enabled_ids() -> frozenset[str]:
+    """Ids enabled when the user has not customized the stream yet."""
+    return frozenset(metric.id for metric in metrics_for_cimr_stream())
+
+
+def metrics_for_span(
+    span_type: str,
+    *,
+    enabled: frozenset[str] | None = None,
+) -> tuple[MetricSpec, ...]:
+    """CIMR-stream metrics whose span types include ``span_type``.
+
+    When ``enabled`` is set, only those ids are returned (still must be
+    catalog ``cimr_stream`` metrics that apply to the span).
+    """
     return tuple(
         metric
         for metric in metrics_for_cimr_stream()
         if span_type in metric.span_types
+        and (enabled is None or metric.id in enabled)
     )

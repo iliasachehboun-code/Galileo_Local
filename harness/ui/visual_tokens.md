@@ -14,22 +14,23 @@ Référence : capture console Galileo (fond clair, accents lavande / violet, bad
 
 ```css
 :root {
-  --gal-bg: #f7f7fb;           /* fond page légèrement lavande-gris */
-  --gal-surface: #ffffff;      /* table, panneaux */
-  --gal-sidebar: #ffffff;      /* ou #fafafa */
-  --gal-border: #e6e6ef;
-  --gal-text: #1c1c28;
-  --gal-muted: #6b6b7b;
-  --gal-accent: #6d5efc;       /* violet Configure Metrics / liens actifs */
-  --gal-accent-soft: #eef0ff;  /* fond item nav actif */
-  --gal-row-hover: #f3f4fb;
-  --gal-badge-ok-bg: #e7f8ef;
-  --gal-badge-ok-fg: #0f7a45;
-  --gal-badge-bad-bg: #fdecee;
-  --gal-badge-bad-fg: #c62828;
-  --gal-badge-neutral-bg: #eef0f4;
-  --gal-badge-neutral-fg: #5c5c6a;
-  --gal-na: #9a9aaa;
+  --gal-bg: #f4f5f8;
+  --gal-surface: #ffffff;
+  --gal-sidebar: #fafafb;
+  --gal-border: #e8e8ee;
+  --gal-text: #111827;
+  --gal-muted: #6b7280;
+  --gal-accent: #6d28d9;       /* Configure Metrics / tabs actifs */
+  --gal-accent-soft: #f3eefe;
+  --gal-nav-active-bg: #eef2ff; /* Logs sidebar + left indigo rail */
+  --gal-row-hover: #f9fafb;
+  --gal-badge-ok-bg: #def7ec;
+  --gal-badge-ok-fg: #03543f;
+  --gal-badge-bad-bg: #fde8e8;
+  --gal-badge-bad-fg: #9b1c1c;
+  --gal-badge-neutral-bg: #f3f4f6;
+  --gal-badge-neutral-fg: #4b5563;
+  --gal-na: #9ca3af;
 }
 ```
 

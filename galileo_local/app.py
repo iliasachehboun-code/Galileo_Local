@@ -26,6 +26,7 @@ from galileo_local.console import (
     render_overview,
     render_session_detail,
     render_trace_detail,
+    render_trends,
 )
 from galileo_local.experiments import DuplicateRun, ExperimentCreate, MissingTrace
 from galileo_local.models import Trace
@@ -202,13 +203,27 @@ def create_app(
     def logs_session(session_id: str) -> HTMLResponse:
         return HTMLResponse(render_session_detail(application.state.store, session_id))
 
+    @application.get("/logs/trends", response_class=HTMLResponse)
+    def logs_trends() -> HTMLResponse:
+        return HTMLResponse(render_trends(application.state.store))
+
     @application.get("/overview", response_class=HTMLResponse)
     def overview_page() -> HTMLResponse:
         return HTMLResponse(render_overview(application.state.store))
 
     @application.get("/metrics", response_class=HTMLResponse)
-    def metrics_page() -> HTMLResponse:
-        return HTMLResponse(render_metrics_page())
+    def metrics_page(saved: int = 0) -> HTMLResponse:
+        return HTMLResponse(
+            render_metrics_page(application.state.store, saved=bool(saved))
+        )
+
+    @application.post("/metrics", response_model=None)
+    async def metrics_save(request: Request) -> Response:
+        form = await request.form()
+        raw = form.getlist("metric")
+        ids = {str(value) for value in raw}
+        application.state.store.set_enabled_metric_ids(ids)
+        return RedirectResponse(url="/metrics?saved=1", status_code=303)
 
     @application.get("/chat", response_class=HTMLResponse)
     def chat_get() -> HTMLResponse:
